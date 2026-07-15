@@ -1,0 +1,13 @@
+[project]
+name = "rujpbunproankideck"
+version = "1.0.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "anki>=26.5",
+    "beautifulsoup4>=4.15.0",
+    "cerebras-cloud-sdk>=1.67.0",
+    "python-dotenv>=1.2.2",
+    "requests>=2.34.2",
+]
