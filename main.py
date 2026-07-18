@@ -2,13 +2,14 @@ import logging
 import re
 import json
 import requests
+import sqlite3
 
 from urllib.parse import unquote, urljoin
 from shutil import rmtree
 from time import sleep
 from hashlib import md5
 from os import getenv, listdir, makedirs, remove
-from os.path import isfile, join, exists
+from os.path import join, exists
 from bs4 import BeautifulSoup
 from sys import exit
 from anki.collection import Collection
@@ -33,22 +34,56 @@ HEADERS = {
 }
 
 INDEX_URL = "https://bunpro.jp/grammar_points"
-
-PARSED_DATA_FILE = "bunpro_parsed_data.json"
-
+DB_FILE = "bunpro.db"
 CACHE_DIR = "bunpro_cache"
-
 
 session = requests.Session()
 session.headers.update(HEADERS)
-
 
 api_key = getenv("API_KEY")
 if api_key is None:
     logger.error("API_KEY не найден в .env")
     exit(1)
 
-if not isfile("grammar_links.json"):
+client = Cerebras(api_key=api_key, max_retries=0)
+
+conn = sqlite3.connect(DB_FILE)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS links (
+    point_name TEXT PRIMARY KEY,
+    url TEXT
+)
+""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS extracted_grammar (
+    filename TEXT PRIMARY KEY,
+    title TEXT,
+    jlpt TEXT,
+    structure TEXT,
+    about TEXT,
+    examples_raw TEXT
+)
+""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS parsed_grammar (
+    source_title TEXT PRIMARY KEY,
+    grammar TEXT,
+    meaning TEXT,
+    structure TEXT,
+    jlpt TEXT,
+    nuance TEXT,
+    examples TEXT
+)
+""")
+
+conn.commit()
+
+cursor.execute("SELECT count(*) FROM links")
+links_count = cursor.fetchone()[0]
+
+if links_count == 0:
     logger.info("Парсим главную страницу грамматики...")
     try:
         response = session.get(INDEX_URL, headers=HEADERS, timeout=15)
@@ -77,19 +112,25 @@ if not isfile("grammar_links.json"):
 
         grammar_list = list(all_links)
 
-        with open("grammar_links.json", "w", encoding="utf-8") as f:
-            json.dump(grammar_list, f, ensure_ascii=False, indent=2)
-
+        cursor.executemany(
+            "INSERT OR IGNORE INTO links (point_name, url) VALUES (?, ?)", grammar_list
+        )
+        conn.commit()
         logger.info(
-            f"Успешно найдено и сохранено грамматических точек: {len(grammar_list)}"
+            f"Успешно найдено и сохранено грамматических точек в БД: {len(grammar_list)}"
         )
 
     except Exception as e:
         logger.error(f"Ошибка при получении списка грамматики: {e}")
+        conn.close()
+        exit(1)
+
 else:
     logger.info("Главная страница уже пропаршена...")
-    with open("grammar_links.json", encoding="utf-8") as f:
-        grammar_list = json.load(f)
+
+
+cursor.execute("SELECT point_name, url FROM links")
+grammar_list = cursor.fetchall()
 
 makedirs(CACHE_DIR, exist_ok=True)
 
@@ -136,10 +177,15 @@ logger.info(
 )
 
 grammar_raw_files = [f for f in listdir(CACHE_DIR) if f.endswith(".html")]
-extracted_data = []
 
-if not isfile("clean_extracted_grammar.json"):
-    logger.info("Очищаем страницы от мусора...")
+cursor.execute("SELECT filename FROM extracted_grammar")
+processed_files = {row[0] for row in cursor.fetchall()}
+
+files_to_process = [f for f in grammar_raw_files if f not in processed_files]
+
+
+if files_to_process:
+    logger.info(f"Очищаем новые страницы от мусора ({len(files_to_process)} шт.)...")
     for file in grammar_raw_files:
         with open(join(CACHE_DIR, file), "r", encoding="utf-8") as f:
             html = f.read()
@@ -241,45 +287,27 @@ if not isfile("clean_extracted_grammar.json"):
                     unique_examples.append(clean)
                     seen.add(clean)
 
-            item_data = {
-                "filename": file,
-                "title": title,
-                "jlpt": jlpt_level,
-                "structure": structure_text,
-                "about": about_text,
-                "examples_raw": unique_examples[:10],
-            }
-            extracted_data.append(item_data)
-            logger.info(f"найдена статья {title}")
+            examples_raw_json = json.dumps(unique_examples[:10], ensure_ascii=False)
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO extracted_grammar (filename, title, jlpt, structure, about, examples_raw)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    file,
+                    title,
+                    jlpt_level,
+                    structure_text,
+                    about_text,
+                    examples_raw_json,
+                ),
+            )
+            conn.commit()
+            logger.info(f"Добавлена сырая статья: {title}")
 
-    with open("clean_extracted_grammar.json", "w", encoding="utf-8") as f:
-        json.dump(extracted_data, f, ensure_ascii=False, indent=2)
-
-    logger.info(f"\nГотово! Обработано файлов: {len(extracted_data)}")
-
-
-client = Cerebras(api_key=api_key)
-
-with open("clean_extracted_grammar.json", "r", encoding="utf-8") as f:
-    extracted_data = json.load(f)
-
-final_grammar_data = []
-processed_titles = set()
-
-if exists(PARSED_DATA_FILE):
-    try:
-        with open(PARSED_DATA_FILE, "r", encoding="utf-8") as f:
-            final_grammar_data = json.load(f)
-            for item in final_grammar_data:
-                title_key = item.get("source_title") or item.get("grammar")
-                if title_key:
-                    processed_titles.add(title_key)
-        logger.info(
-            f"Загружен существующий прогресс. Уже обработано элементов: {len(processed_titles)}"
-        )
-    except Exception as e:
-        logger.error(f"Не удалось прочитать {PARSED_DATA_FILE} ({e}). Начинаем заново.")
-        final_grammar_data = []
+    logger.info("Все новые HTML-страницы успешно обработаны и внесены в БД.")
+else:
+    logger.info("Новых HTML-файлов для извлечения не обнаружено.")
 
 prompt_template = """
 Ты эксперт в японском языке. Я тебе присылаю справку о какой-то определенной 
@@ -296,6 +324,7 @@ prompt_template = """
 
 В ответ жду ТОЛЬКО валидный JSON. Не используй комментарии, скрипты внтури JSON. 
 В поле meaning должно быть всё на русском, но при этом кратко, по делу, не больше 20-25 симоволов. 
+В structure тоже кратко, по делу, всё на русском, но без потери важной информации.
 Требуемая структура:
 {{
   "grammar": "...",
@@ -309,83 +338,98 @@ prompt_template = """
 }}
 """
 
-for item in extracted_data:
-    title = item["title"]
+cursor.execute("""
+    SELECT title, jlpt, structure, about, examples_raw 
+    FROM extracted_grammar 
+    WHERE title NOT IN (SELECT source_title FROM parsed_grammar)
+""")
+to_process_llm = cursor.fetchall()
 
-    if title in processed_titles:
-        continue
+if to_process_llm:
+    logger.info(f"Запуск разметки через LLM. Ожидает обработки: {len(to_process_llm)}")
 
-    logger.info(f"Обработка: {item['title']} ({item['jlpt']})...")
+    for title, jlpt, structure, about, examples_raw_str in to_process_llm:
+        examples_raw = json.loads(examples_raw_str)
+        logger.info(f"Обработка: {title} ({jlpt})...")
 
-    prompt = prompt_template.format(
-        title=title,
-        jlpt=item["jlpt"],
-        structure=item["structure"],
-        about=item["about"],
-        examples=" | ".join(item["examples_raw"][:5]),
-    )
-
-    max_retries = 5
-    retry_delay = 4
-    success = False
-    parsed_json = None
-
-    for attempt in range(max_retries):
-        try:
-            completion = client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="gpt-oss-120b",
-                temperature=0.5,
-                top_p=1,
-                stream=False,
-                response_format={"type": "json_object"},
-            )
-            raw_text = None
-            if isinstance(completion, ChatCompletionResponse):
-                raw_text = completion.choices[0].message.content
-
-            if raw_text:
-                parsed_json = json.loads(raw_text)
-                parsed_json["source_title"] = title
-                parsed_json["jlpt"] = item["jlpt"]
-                success = True
-                break
-            else:
-                logger.info(
-                    f"Попытка {attempt + 1}/{max_retries}: Получен пустой ответ от API."
-                )
-        except Exception as e:
-            logger.error(f"Попытка {attempt + 1}/{max_retries}: Ошибка API: {e}")
-
-        if attempt < max_retries - 1:
-            logger.info(f"Ожидание {retry_delay} сек перед повторным запросом...")
-            sleep(retry_delay)
-            retry_delay *= 2
-
-    if success and parsed_json:
-        final_grammar_data.append(parsed_json)
-        processed_titles.add(title)
-
-        try:
-            with open(PARSED_DATA_FILE, "w", encoding="utf-8") as f:
-                json.dump(final_grammar_data, f, ensure_ascii=False, indent=2)
-            logger.info("Успешно сохранено.")
-        except Exception as e:
-            logger.error(f"Ошибка записи файла: {e}")
-
-        sleep(2)
-    else:
-        logger.error(
-            f"Не удалось обработать {title} после {max_retries} попыток. Переходим к следующему."
+        prompt = prompt_template.format(
+            title=title,
+            jlpt=jlpt,
+            structure=structure,
+            about=about,
+            examples=" | ".join(examples_raw[:3]),
         )
 
-with open(PARSED_DATA_FILE, "w", encoding="utf-8") as f:
-    json.dump(final_grammar_data, f, ensure_ascii=False, indent=2)
+        max_retries = 5
+        retry_delay = 4
+        success = False
+        parsed_json = None
 
-logger.info(f"\nГотово! Получено {len(final_grammar_data)} точек.")
+        for attempt in range(max_retries):
+            try:
+                completion = client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt}],
+                    model="gpt-oss-120b",
+                    temperature=0.5,
+                    top_p=1,
+                    stream=False,
+                    response_format={"type": "json_object"},
+                )
+                raw_text = None
+                if isinstance(completion, ChatCompletionResponse):
+                    raw_text = completion.choices[0].message.content
 
-with open(PARSED_DATA_FILE, "r", encoding="utf-8") as f:
-    grammar_items = json.load(f)
+                if raw_text:
+                    parsed_json = json.loads(raw_text)
+                    parsed_json["jlpt"] = jlpt
+                    success = True
+                    break
+                else:
+                    logger.info(
+                        f"Попытка {attempt + 1}/{max_retries}: Получен пустой ответ от API."
+                    )
+            except Exception as e:
+                logger.error(f"Попытка {attempt + 1}/{max_retries}: Ошибка API: {e}")
+
+            if attempt < max_retries - 1:
+                logger.info(f"Ожидание {retry_delay} сек перед повторным запросом...")
+                sleep(retry_delay)
+                retry_delay *= 2
+
+        if success and parsed_json:
+            try:
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO parsed_grammar (source_title, grammar, meaning, structure, jlpt, nuance, examples)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        title,
+                        parsed_json.get("grammar", title),
+                        parsed_json.get("meaning", ""),
+                        parsed_json.get("structure", parsed_json.get("structure", "")),
+                        jlpt,
+                        parsed_json.get("nuance", ""),
+                        json.dumps(parsed_json.get("examples", []), ensure_ascii=False),
+                    ),
+                )
+                conn.commit()
+                logger.info("Успешно сохранено в БД.")
+            except Exception as e:
+                logger.error(f"Ошибка записи перевода в БД для {title}: {e}")
+
+            sleep(10)
+        else:
+            logger.error(
+                f"Не удалось обработать {title} после {max_retries} попыток. Переходим к следующему."
+            )
+else:
+    logger.info("Все извлеченные статьи уже переведены и сохранены в БД.")
+
+cursor.execute(
+    "SELECT grammar, jlpt, meaning, structure, nuance, examples FROM parsed_grammar"
+)
+grammar_items = cursor.fetchall()
 
 
 def generate_guid(grammar: str, jlpt: str) -> str:
@@ -407,7 +451,6 @@ try:
         col.models.add_field(model, col.models.new_field("Structure"))
         col.models.add_field(model, col.models.new_field("Nuance"))
         col.models.add_field(model, col.models.new_field("ExamplesHTML"))
-        col.models.add_field(model, col.models.new_field("URL"))
 
     model["css"] = CARD_CSS
 
@@ -428,11 +471,11 @@ try:
     if deck_id_passive is None or deck_id_active is None:
         raise ValueError("Не удалось создать или получить ID колод в Anki.")
 
-    for item in grammar_items:
+    for item in grammar_items[:10]:
         examples_html_list = []
         for ex in item["examples"][:4]:
             examples_html_list.append(
-                f'<div class="example-item"><div class="ex-jp">{ex["jp"]}</div><div class="ex-en">{ex["ru"]}</div></div>'
+                f'<div class="example-item"><div class="ex-jp">{ex["jp"]}</div><div class="ex-ru">{ex["ru"]}</div></div>'
             )
         examples_html = "".join(examples_html_list)
 
@@ -454,7 +497,7 @@ try:
             col.update_card(card_active)
 
     exporter = AnkiPackageExporter(col)
-    output_file = "Bunpro_Grammar.apkg"
+    output_file = "bunpro_grammar.apkg"
     exporter.exportInto(output_file)
     logger.info(f"Колода создана успешно! Имя файла: {output_file}")
 

@@ -150,32 +150,33 @@ T1_BACK = """
 T2_FRONT = """
 <div class="card-container">
     <div class="jlpt-tag">{{JLPT}} — Воспроизведение</div>
-    <div class="section-title">Заполните пропуск:</div>
-    <div class="ex-jp" style="font-size: 1.35em; line-height: 1.6; text-align: center;">
-        {{SentenceClozed}}
-    </div>
-    <div class="section-title">Перевод предложения</div>
-    <div class="ex-en" style="text-align: center;">{{SentenceEN}}</div>
+    <div class="section-title">Как выразить это значение на японском?</div>
+    <div class="meaning-text" style="font-size: 1.5em; margin: 20px 0;">{{Meaning}}</div>
 </div>
 """
 
 T2_BACK = """
 <div class="card-container">
     <div class="jlpt-tag">{{JLPT}} — Ответ</div>
-    <div class="section-title">Предложение целиком:</div>
-    <div class="ex-jp" style="font-size: 1.35em; line-height: 1.6; text-align: center;">
-        {{SentenceFull}}
-    </div>
+    <div class="grammar-title">{{Grammar}}</div>
 
-    <hr style="border:0; border-top:1px solid #edf2f7; margin: 15px 0;">
-
-    <div class="grammar-title" style="font-size: 1.8em;">{{Grammar}}</div>
-    <div class="meaning-text" style="font-size: 1.1em;">{{Meaning}}</div>
+    <div class="section-title">Значение</div>
+    <div class="meaning-text">{{Meaning}}</div>
 
     {{#Structure}}
-    <div class="section-title">Подсказка по структуре</div>
-    <div class="box-info" style="font-size: 0.9em;">{{Structure}}</div>
+    <div class="section-title">Присоединение</div>
+    <div class="box-info">{{Structure}}</div>
     {{/Structure}}
+
+    {{#Nuance}}
+    <div class="section-title">Нюансы</div>
+    <div class="box-info">{{Nuance}}</div>
+    {{/Nuance}}
+
+    {{#ExamplesHTML}}
+    <div class="section-title">Примеры</div>
+    <div>{{ExamplesHTML}}</div>
+    {{/ExamplesHTML}}
 </div>
 """
 

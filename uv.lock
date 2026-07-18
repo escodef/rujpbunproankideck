@@ -60,7 +60,7 @@ wheels = [
 
 [[package]]
 name = "cerebras-cloud-sdk"
-version = "1.67.0"
+version = "1.91.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -70,9 +70,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/92/12/c201f07582068141e88f9a523ab02fdc97de58f2f7c0df775c6c52b9d8dd/cerebras_cloud_sdk-1.67.0.tar.gz", hash = "sha256:3aed6f86c6c7a83ee9d4cfb08a2acea089cebf2af5b8aed116ef79995a4f4813", size = 131536, upload-time = "2026-01-29T23:31:27.306Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0c/98/767ab62618be157b5fb21bce980ad5c8ebe155e32aff38521e511054e5c3/cerebras_cloud_sdk-1.91.0.tar.gz", hash = "sha256:6f4193fec088911ffe829ce5682510f86120cd3532caf4e8540bf33b59fdb7eb", size = 146059, upload-time = "2026-07-16T17:08:00.568Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/5e/36a364f3d1bab4073454b75e7c91dc7ec6879b960063d1a9c929f1c7ea71/cerebras_cloud_sdk-1.67.0-py3-none-any.whl", hash = "sha256:658b79ca2e9c16f75cc6b4e5d523ee014c9e54a88bd39f88905c28ecb33daae1", size = 97807, upload-time = "2026-01-29T23:31:25.77Z" },
+    { url = "https://files.pythonhosted.org/packages/72/8f/f0534891bce685c45339e6be4fcfe9c3684a1e61734374cf44919394652e/cerebras_cloud_sdk-1.91.0-py3-none-any.whl", hash = "sha256:4460a73907a1ed89aa29475ca33a64443d320cc412a2cd4db2604e981bce13ca", size = 106122, upload-time = "2026-07-16T17:07:59.277Z" },
 ]
 
 [[package]]
@@ -362,7 +362,7 @@ socks = [
 
 [[package]]
 name = "rujpbunproankideck"
-version = "0.1.0"
+version = "1.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "anki" },
