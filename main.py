@@ -16,8 +16,7 @@ from anki.collection import Collection
 from anki.exporting import AnkiPackageExporter
 from anki_template import CARD_CSS, T1_FRONT, T1_BACK, T2_FRONT, T2_BACK
 from dotenv import load_dotenv
-from cerebras.cloud.sdk import Cerebras
-from cerebras.cloud.sdk.types.chat.chat_completion import ChatCompletionResponse
+from openai import OpenAI
 
 load_dotenv()
 
@@ -45,9 +44,12 @@ if api_key is None:
     logger.error("API_KEY не найден в .env")
     exit(1)
 
-client = Cerebras(api_key=api_key, max_retries=0)
+client = OpenAI(base_url="https://api.cerebras.ai/v1", api_key=api_key, max_retries=0)
 
 conn = sqlite3.connect(DB_FILE)
+
+conn.row_factory = sqlite3.Row
+
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -56,6 +58,7 @@ CREATE TABLE IF NOT EXISTS links (
     url TEXT
 )
 """)
+
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS extracted_grammar (
     filename TEXT PRIMARY KEY,
@@ -63,17 +66,20 @@ CREATE TABLE IF NOT EXISTS extracted_grammar (
     jlpt TEXT,
     structure TEXT,
     about TEXT,
+    url TEXT,
     examples_raw TEXT
 )
 """)
+
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS parsed_grammar (
+CREATE TABLE IF NOT EXISTS translated_grammar (
     source_title TEXT PRIMARY KEY,
     grammar TEXT,
     meaning TEXT,
     structure TEXT,
     jlpt TEXT,
     nuance TEXT,
+    url TEXT,
     examples TEXT
 )
 """)
@@ -183,6 +189,12 @@ processed_files = {row[0] for row in cursor.fetchall()}
 
 files_to_process = [f for f in grammar_raw_files if f not in processed_files]
 
+filename_to_url = {}
+for point_name, url in grammar_list:
+    p_name = point_name
+    p_url = url
+    s_name = sanitize_filename(p_name) or md5(p_name.encode()).hexdigest()[:8]
+    filename_to_url[f"{s_name}.html"] = p_url
 
 if files_to_process:
     logger.info(f"Очищаем новые страницы от мусора ({len(files_to_process)} шт.)...")
@@ -288,10 +300,13 @@ if files_to_process:
                     seen.add(clean)
 
             examples_raw_json = json.dumps(unique_examples[:10], ensure_ascii=False)
+
+            current_url = filename_to_url.get(file, "")
+
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO extracted_grammar (filename, title, jlpt, structure, about, examples_raw)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO extracted_grammar (filename, title, jlpt, structure, about, url, examples_raw)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     file,
@@ -299,6 +314,7 @@ if files_to_process:
                     jlpt_level,
                     structure_text,
                     about_text,
+                    current_url,
                     examples_raw_json,
                 ),
             )
@@ -309,50 +325,49 @@ if files_to_process:
 else:
     logger.info("Новых HTML-файлов для извлечения не обнаружено.")
 
-prompt_template = """
-Ты эксперт в японском языке. Я тебе присылаю справку о какой-то определенной 
-грамматической конструкции. Переведи её с японского на русский. Выдели все необходимое в нюанс.
-Для каждого примера приведи:
-1. Оригинальное приложение на японском языке (замени ____ на грамматическую конструкцию или её нужную форму).
-2. Перевод на русский язык.
+system_prompt = """Ты — профессиональный переводчик и лингвист, эксперт в японском языке.
+Твоя задача — перевести предоставленную справку о грамматической конструкции на русский язык и вернуть результат строго в формате JSON.
+
+Требуемая структура JSON:
+{
+"grammar": "грамматическая конструкция на японском и только на японском, очищенная о мусора и пояснений в скобках, сама грамматика без других лишних символов, кратко, до 10-15 символов, например ～てこそ или ～ようとしない",
+"meaning": "краткое значение на русском (строго до 20-25 символов)",
+"structure": "схема присоединения на русском, кратко и понятно (строго до 15-20 символов)",
+"nuance": "важные нюансы использования, различия, выжимка из предоставленного описания",
+"examples": [
+    {"jp": "предложение на японском с восстановленной конструкцией вместо ____", "ru": "точный перевод на русский"}
+]
+}
+
+Правила:
+
+    Ответ должен быть ТОЛЬКО валидным JSON, без комментариев и разметки markdown (вроде ```json).
+
+    В поле 'examples' для каждого примера замени символ '____' (если он есть) на правильную форму этой грамматики."""
+
+user_prompt_template = """Переведи и структурируй следующую грамматику:
 
 Грамматика: {title}
-Уровень JLPT: {jlpt}
-Структура: {structure}
-Пояснение к грамматике: {about}
-Примеры: {examples}
-
-В ответ жду ТОЛЬКО валидный JSON. Не используй комментарии, скрипты внтури JSON. 
-В поле meaning должно быть всё на русском, но при этом кратко, по делу, не больше 20-25 симоволов. 
-В structure тоже кратко, по делу, всё на русском, но без потери важной информации.
-Требуемая структура:
-{{
-  "grammar": "...",
-  "meaning": "...",
-  "structure": "...",
-  "jlpt": "{jlpt}",
-  "nuance": "...",
-  "examples": [
-    {{"jp": "...", "ru": "..."}}
-  ]
-}}
-"""
+Уровень: {jlpt}
+Структура (оригинал): {structure}
+Описание (оригинал): {about}
+Примеры (оригинал): {examples}"""
 
 cursor.execute("""
-    SELECT title, jlpt, structure, about, examples_raw 
-    FROM extracted_grammar 
-    WHERE title NOT IN (SELECT source_title FROM parsed_grammar)
+    SELECT title, jlpt, structure, about, url, examples_raw
+    FROM extracted_grammar
+    WHERE title NOT IN (SELECT source_title FROM translated_grammar)
 """)
 to_process_llm = cursor.fetchall()
 
 if to_process_llm:
     logger.info(f"Запуск разметки через LLM. Ожидает обработки: {len(to_process_llm)}")
 
-    for title, jlpt, structure, about, examples_raw_str in to_process_llm:
+    for title, jlpt, structure, about, url, examples_raw_str in to_process_llm:
         examples_raw = json.loads(examples_raw_str)
         logger.info(f"Обработка: {title} ({jlpt})...")
 
-        prompt = prompt_template.format(
+        user_content = user_prompt_template.format(
             title=title,
             jlpt=jlpt,
             structure=structure,
@@ -368,16 +383,19 @@ if to_process_llm:
         for attempt in range(max_retries):
             try:
                 completion = client.chat.completions.create(
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
                     model="gpt-oss-120b",
-                    temperature=0.5,
+                    temperature=0.3,
                     top_p=1,
                     stream=False,
+                    reasoning_effort="medium",
                     response_format={"type": "json_object"},
                 )
-                raw_text = None
-                if isinstance(completion, ChatCompletionResponse):
-                    raw_text = completion.choices[0].message.content
+
+                raw_text = completion.choices[0].message.content
 
                 if raw_text:
                     parsed_json = json.loads(raw_text)
@@ -400,8 +418,8 @@ if to_process_llm:
             try:
                 cursor.execute(
                     """
-                    INSERT OR REPLACE INTO parsed_grammar (source_title, grammar, meaning, structure, jlpt, nuance, examples)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT OR REPLACE INTO translated_grammar (source_title, grammar, meaning, structure, jlpt, nuance, url, examples)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         title,
@@ -410,6 +428,7 @@ if to_process_llm:
                         parsed_json.get("structure", parsed_json.get("structure", "")),
                         jlpt,
                         parsed_json.get("nuance", ""),
+                        url,
                         json.dumps(parsed_json.get("examples", []), ensure_ascii=False),
                     ),
                 )
@@ -418,7 +437,7 @@ if to_process_llm:
             except Exception as e:
                 logger.error(f"Ошибка записи перевода в БД для {title}: {e}")
 
-            sleep(10)
+            sleep(6)
         else:
             logger.error(
                 f"Не удалось обработать {title} после {max_retries} попыток. Переходим к следующему."
@@ -427,7 +446,7 @@ else:
     logger.info("Все извлеченные статьи уже переведены и сохранены в БД.")
 
 cursor.execute(
-    "SELECT grammar, jlpt, meaning, structure, nuance, examples FROM parsed_grammar"
+    "SELECT grammar, jlpt, meaning, structure, nuance, url, examples FROM translated_grammar"
 )
 grammar_items = cursor.fetchall()
 
@@ -451,6 +470,7 @@ try:
         col.models.add_field(model, col.models.new_field("Structure"))
         col.models.add_field(model, col.models.new_field("Nuance"))
         col.models.add_field(model, col.models.new_field("ExamplesHTML"))
+        col.models.add_field(model, col.models.new_field("URL"))
 
     model["css"] = CARD_CSS
 
@@ -471,9 +491,16 @@ try:
     if deck_id_passive is None or deck_id_active is None:
         raise ValueError("Не удалось создать или получить ID колод в Anki.")
 
-    for item in grammar_items[:10]:
+    for item in grammar_items:
         examples_html_list = []
-        for ex in item["examples"][:4]:
+
+        try:
+            parsed_examples = json.loads(item["examples"]) if item["examples"] else []
+        except Exception as e:
+            logger.error(f"Ошибка парсинга примеров для {item['grammar']}: {e}")
+            parsed_examples = []
+
+        for ex in parsed_examples[:4]:
             examples_html_list.append(
                 f'<div class="example-item"><div class="ex-jp">{ex["jp"]}</div><div class="ex-ru">{ex["ru"]}</div></div>'
             )
@@ -487,6 +514,7 @@ try:
         note["Structure"] = item["structure"]
         note["Nuance"] = item["nuance"]
         note["ExamplesHTML"] = examples_html
+        note["URL"] = item["url"]
 
         col.add_note(note, deck_id_passive)
 

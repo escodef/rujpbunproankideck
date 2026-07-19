@@ -113,6 +113,30 @@ CARD_CSS = """
     color: #27ae60;
     font-weight: bold;
 }
+.bunpro-link {
+    display: inline-block;
+    margin-top: 20px;
+    font-size: 0.8em;
+    color: #20b2aa;
+    text-decoration: none;
+    border: 1px solid #20b2aa;
+    padding: 5px 16px;
+    border-radius: 15px;
+    font-weight: 500;
+    transition: all 0.15s ease-in-out;
+}
+.bunpro-link:hover {
+    background-color: #20b2aa;
+    color: white !important;
+}
+.nightMode .bunpro-link {
+    color: #38bdf8;
+    border-color: #38bdf8;
+}
+.nightMode .bunpro-link:hover {
+    background-color: #38bdf8;
+    color: #1e1e24 !important;
+}
 """
 
 T1_FRONT = """
@@ -124,7 +148,7 @@ T1_FRONT = """
 
 T1_BACK = """
 <div class="card-container">
-    <div class="jlpt-tag">{{JLPT}} — Распознавание</div>
+    <div class="jlpt-tag">{{JLPT}}</div>
     <div class="grammar-title">{{Grammar}}</div>
 
     <div class="section-title">Значение</div>
@@ -144,20 +168,25 @@ T1_BACK = """
     <div class="section-title">Примеры</div>
     <div>{{ExamplesHTML}}</div>
     {{/ExamplesHTML}}
+
+    {{#URL}}
+    <div style="text-align: center;">
+        <a href="{{URL}}" class="bunpro-link">Открыть на Bunpro</a>
+    </div>
+    {{/URL}}
 </div>
 """
 
 T2_FRONT = """
 <div class="card-container">
-    <div class="jlpt-tag">{{JLPT}} — Воспроизведение</div>
-    <div class="section-title">Как выразить это значение на японском?</div>
+    <div class="jlpt-tag">{{JLPT}}</div>
     <div class="meaning-text" style="font-size: 1.5em; margin: 20px 0;">{{Meaning}}</div>
 </div>
 """
 
 T2_BACK = """
 <div class="card-container">
-    <div class="jlpt-tag">{{JLPT}} — Ответ</div>
+    <div class="jlpt-tag">{{JLPT}}</div>
     <div class="grammar-title">{{Grammar}}</div>
 
     <div class="section-title">Значение</div>
@@ -177,6 +206,11 @@ T2_BACK = """
     <div class="section-title">Примеры</div>
     <div>{{ExamplesHTML}}</div>
     {{/ExamplesHTML}}
+
+    {{#URL}}
+    <div style="text-align: center;">
+        <a href="{{URL}}" class="bunpro-link">Открыть на Bunpro</a>
+    </div>
+    {{/URL}}
 </div>
 """
-
