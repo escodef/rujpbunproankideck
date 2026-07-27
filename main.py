@@ -1,27 +1,29 @@
+import json
 import logging
 import re
-import json
-import requests
 import sqlite3
-
-from urllib.parse import unquote, urljoin
+import sys
+from hashlib import md5
+from http import HTTPStatus
+from os import getenv
+from pathlib import Path
 from shutil import rmtree
 from time import sleep
-from hashlib import md5
-from os import getenv, listdir, makedirs, remove
-from os.path import join, exists
-from bs4 import BeautifulSoup
-from sys import exit
+from urllib.parse import unquote, urljoin
+
+import requests
 from anki.collection import Collection
 from anki.exporting import AnkiPackageExporter
-from anki_template import CARD_CSS, T1_FRONT, T1_BACK, T2_FRONT, T2_BACK
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import OpenAI
+
+from anki_template import CARD_CSS, T1_BACK, T1_FRONT, T2_BACK, T2_FRONT
 
 load_dotenv()
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="{asctime} - {levelname} - {message}",
     style="{",
     datefmt="%Y-%m-%d %H:%M",
@@ -29,12 +31,13 @@ logging.basicConfig(
 logger = logging.getLogger("BUNPRO")
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0",
 }
 
 INDEX_URL = "https://bunpro.jp/grammar_points"
 DB_FILE = "bunpro.db"
-CACHE_DIR = "bunpro_cache"
+OUTPUT_FILE = Path("bunpro_grammar.apkg")
+CACHE_DIR = Path("bunpro_cache")
 
 session = requests.Session()
 session.headers.update(HEADERS)
@@ -42,7 +45,7 @@ session.headers.update(HEADERS)
 api_key = getenv("API_KEY")
 if api_key is None:
     logger.error("API_KEY не найден в .env")
-    exit(1)
+    sys.exit(1)
 
 client = OpenAI(base_url="https://api.cerebras.ai/v1", api_key=api_key, max_retries=0)
 
@@ -123,13 +126,14 @@ if links_count == 0:
         )
         conn.commit()
         logger.info(
-            f"Успешно найдено и сохранено грамматических точек в БД: {len(grammar_list)}"
+            "Успешно найдено и сохранено грамматических точек в БД: %d",
+            len(grammar_list),
         )
 
-    except Exception as e:
-        logger.error(f"Ошибка при получении списка грамматики: {e}")
+    except Exception:
+        logger.exception("Ошибка при получении списка грамматики")
         conn.close()
-        exit(1)
+        sys.exit(1)
 
 else:
     logger.info("Главная страница уже пропаршена...")
@@ -138,7 +142,7 @@ else:
 cursor.execute("SELECT point_name, url FROM links")
 grammar_list = cursor.fetchall()
 
-makedirs(CACHE_DIR, exist_ok=True)
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def sanitize_filename(name: str) -> str:
@@ -152,54 +156,60 @@ skipped = 0
 
 for point_name, url in grammar_list:
     safe_name = (
-        sanitize_filename(point_name) or md5(point_name.encode()).hexdigest()[:8]
+        sanitize_filename(point_name)
+        or md5(point_name.encode(), usedforsecurity=False).hexdigest()[:8]
     )
-    cache_path = join(CACHE_DIR, f"{safe_name}.html")
+    cache_path = CACHE_DIR / f"{safe_name}.html"
 
-    if exists(cache_path):
+    if cache_path.exists():
         skipped += 1
         continue
 
     try:
         res = session.get(url, headers=HEADERS, timeout=15)
-        if res.status_code == 200:
-            with open(cache_path, "w", encoding="utf-8") as f:
+        if res.status_code == HTTPStatus.OK:
+            with cache_path.open("w", encoding="utf-8") as f:
                 f.write(res.text)
             downloaded += 1
-            logger.debug(f"найдена статья {point_name}")
+            logger.debug("найдена статья %s", point_name)
             sleep(2.2)
-        elif res.status_code == 404:
-            logger.error(f"Страница не найдена: {url}")
+        elif res.status_code == HTTPStatus.NOT_FOUND:
+            logger.error("Страница не найдена: %s", url)
         else:
-            logger.error(f"Ошибка при загрузке {point_name}: Код {res.status_code}")
-    except Exception as e:
-        logger.error(
-            f"Ошибка сети на {point_name}: {e}. Перезапустите ячейку для продолжения."
+            logger.error("Ошибка при загрузке %s: Код %d", point_name, res.status_code)
+    except Exception:
+        logger.exception(
+            "Ошибка сети на %s. Перезапустите ячейку для продолжения.", point_name
         )
         break
 
 logger.info(
-    f"Процесс завершен. Загружено новых: {downloaded}, Пропущено (были в кэше): {skipped}"
+    "Процесс завершен. Загружено новых: %d, Пропущено (были в кэше): %d",
+    downloaded,
+    skipped,
 )
 
-grammar_raw_files = [f for f in listdir(CACHE_DIR) if f.endswith(".html")]
+grammar_raw_files = [file for file in CACHE_DIR.iterdir() if file.suffix == ".html"]
 
 cursor.execute("SELECT filename FROM extracted_grammar")
 processed_files = {row[0] for row in cursor.fetchall()}
 
-files_to_process = [f for f in grammar_raw_files if f not in processed_files]
+files_to_process = [f for f in grammar_raw_files if f.name not in processed_files]
 
 filename_to_url = {}
 for point_name, url in grammar_list:
     p_name = point_name
     p_url = url
-    s_name = sanitize_filename(p_name) or md5(p_name.encode()).hexdigest()[:8]
+    s_name = (
+        sanitize_filename(p_name)
+        or md5(p_name.encode(), usedforsecurity=False).hexdigest()[:8]
+    )
     filename_to_url[f"{s_name}.html"] = p_url
 
 if files_to_process:
-    logger.info(f"Очищаем новые страницы от мусора ({len(files_to_process)} шт.)...")
+    logger.info("Очищаем новые страницы от мусора (%d шт.)...", len(files_to_process))
     for file in grammar_raw_files:
-        with open(join(CACHE_DIR, file), "r", encoding="utf-8") as f:
+        with file.open(encoding="utf-8") as f:
             html = f.read()
             soup = BeautifulSoup(html, "html.parser")
 
@@ -207,29 +217,32 @@ if files_to_process:
             title = (
                 title_tag.get_text(" ", strip=True)
                 if title_tag
-                else file.replace(".html", "")
+                else file.name.replace(".html", "")
             )
 
             jlpt_level = "Non-JLPT"
-            jlpt_element = soup.find(string=re.compile(r"JLPT\s*N[1-5]", re.I))
+            jlpt_element = soup.find(string=re.compile(r"JLPT\s*N[1-5]", re.IGNORECASE))
             if jlpt_element:
-                match = re.search(r"N[1-5]", jlpt_element, re.I)
+                match = re.search(r"N[1-5]", jlpt_element, re.IGNORECASE)
                 if match:
                     jlpt_level = match.group(0).upper()
 
             if jlpt_level == "Non-JLPT":
                 breadcrumb = soup.find(
-                    ["nav", "div"], class_=re.compile(r"breadcrumb|lesson", re.I)
+                    ["nav", "div"],
+                    class_=re.compile(r"breadcrumb|lesson", re.IGNORECASE),
                 )
                 if breadcrumb:
-                    match = re.search(r"N[1-5]", breadcrumb.get_text(), re.I)
+                    match = re.search(r"N[1-5]", breadcrumb.get_text(), re.IGNORECASE)
                     if match:
                         jlpt_level = match.group(0).upper()
 
-            def get_section_text(search_regex) -> str:
-                header = soup.find(["h2", "h3"], string=re.compile(search_regex, re.I))
+            def get_section_text(soup: BeautifulSoup, search_regex: str) -> str:
+                header = soup.find(
+                    ["h2", "h3"], string=re.compile(search_regex, re.IGNORECASE)
+                )
                 if not header:
-                    header = soup.find(string=re.compile(search_regex, re.I))
+                    header = soup.find(string=re.compile(search_regex, re.IGNORECASE))
                     if header:
                         header = header.parent
                 if not header:
@@ -237,29 +250,29 @@ if files_to_process:
                 content = []
                 for sibling in header.find_all_next():
                     if sibling.name in ["h1", "h2", "h3"] and not re.search(
-                        search_regex, sibling.text, re.I
+                        search_regex, sibling.text, re.IGNORECASE
                     ):
                         break
-                    if sibling.name in ["p", "ul", "ol", "div"]:
-                        if sibling.name != "div" or not sibling.find(
-                            ["p", "div", "ul"]
-                        ):
-                            txt = sibling.get_text(" ", strip=True)
-                            if txt and txt not in ["English", "Japanese"]:
-                                content.append(txt)
+                    if sibling.name in ["p", "ul", "ol", "div"] and (
+                        sibling.name != "div" or not sibling.find(["p", "div", "ul"])
+                    ):
+                        txt = sibling.get_text(" ", strip=True)
+                        if txt and txt not in ["English", "Japanese"]:
+                            content.append(txt)
                 return "\n".join(content)
 
-            structure_text = get_section_text(r"^Structure$")
-            about_text = get_section_text(r"About")
+            structure_text = get_section_text(soup, r"^Structure$")
+            about_text = get_section_text(soup, r"About")
 
             examples: list[str] = []
             next_data_script = soup.find("script", id="__NEXT_DATA__")
             if next_data_script:
                 try:
-                    if next_data_script.string:
-                        data = json.loads(next_data_script.string)
 
-                    def extract_sentences(obj):
+                    def extract_sentences(
+                        examples: list[str],
+                        obj: dict[str, str] | list[str] | str,
+                    ):
                         if isinstance(obj, dict):
                             jp_val = (
                                 obj.get("japanese")
@@ -273,19 +286,21 @@ if files_to_process:
                                 if len(clean_txt) > 5:
                                     examples.append(clean_txt)
                             for v in obj.values():
-                                extract_sentences(v)
+                                extract_sentences(examples, v)
                         elif isinstance(obj, list):
                             for i in obj:
-                                extract_sentences(i)
+                                extract_sentences(examples, i)
 
-                    extract_sentences(data)
-                except Exception as e:
-                    logger.error(e)
-                    pass
+                    if next_data_script.string:
+                        data = json.loads(next_data_script.string)
+                        extract_sentences(examples, obj=data)
+                except Exception:
+                    logger.exception("Ошибка при попытке извлечения примеров")
 
             if not examples:
                 for el in soup.find_all(
-                    ["span", "div"], class_=re.compile(r"sentence|japanese", re.I)
+                    ["span", "div"],
+                    class_=re.compile(r"sentence|japanese", re.IGNORECASE),
                 ):
                     txt = el.get_text(strip=True)
                     if len(txt) > 10 and re.search(r"[\u3040-\u30ff]", txt):
@@ -309,7 +324,7 @@ if files_to_process:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    file,
+                    file.name,
                     title,
                     jlpt_level,
                     structure_text,
@@ -319,18 +334,21 @@ if files_to_process:
                 ),
             )
             conn.commit()
-            logger.info(f"Добавлена сырая статья: {title}")
+            logger.info("Добавлена сырая статья: %s", title)
 
     logger.info("Все новые HTML-страницы успешно обработаны и внесены в БД.")
 else:
     logger.info("Новых HTML-файлов для извлечения не обнаружено.")
 
 system_prompt = """Ты — профессиональный переводчик и лингвист, эксперт в японском языке.
-Твоя задача — перевести предоставленную справку о грамматической конструкции на русский язык и вернуть результат строго в формате JSON.
+Твоя задача — перевести предоставленную справку о грамматической конструкции на русский
+язык и вернуть результат строго в формате JSON.
 
 Требуемая структура JSON:
 {
-"grammar": "грамматическая конструкция на японском и только на японском, очищенная о мусора и пояснений в скобках, сама грамматика без других лишних символов, кратко, до 10-15 символов, например ～てこそ или ～ようとしない",
+"grammar": "грамматическая конструкция на японском и только на японском, очищенная
+от мусора и пояснений в скобках, сама грамматика без других лишних символов,
+кратко, до 10-15 символов, например ～てこそ или ～ようとしない",
 "meaning": "краткое значение на русском (строго до 20-25 символов)",
 "structure": "схема присоединения на русском, кратко и понятно (строго до 15-20 символов)",
 "nuance": "важные нюансы использования, различия, выжимка из предоставленного описания",
@@ -341,9 +359,8 @@ system_prompt = """Ты — профессиональный переводчи�
 
 Правила:
 
-    Ответ должен быть ТОЛЬКО валидным JSON, без комментариев и разметки markdown (вроде ```json).
-
-    В поле 'examples' для каждого примера замени символ '____' (если он есть) на правильную форму этой грамматики."""
+Ответ должен быть ТОЛЬКО валидным JSON, без комментариев и разметки markdown (вроде ```json).
+В поле 'examples' для каждого примера замени символ '____' (если он есть) на правильную форму этой грамматики."""
 
 user_prompt_template = """Переведи и структурируй следующую грамматику:
 
@@ -361,11 +378,13 @@ cursor.execute("""
 to_process_llm = cursor.fetchall()
 
 if to_process_llm:
-    logger.info(f"Запуск разметки через LLM. Ожидает обработки: {len(to_process_llm)}")
+    logger.info(
+        "Запуск разметки через LLM. Ожидает обработки: %d ", len(to_process_llm)
+    )
 
     for title, jlpt, structure, about, url, examples_raw_str in to_process_llm:
         examples_raw = json.loads(examples_raw_str)
-        logger.info(f"Обработка: {title} ({jlpt})...")
+        logger.info("Обработка: %s (%s)...", title, jlpt)
 
         user_content = user_prompt_template.format(
             title=title,
@@ -404,13 +423,15 @@ if to_process_llm:
                     break
                 else:
                     logger.info(
-                        f"Попытка {attempt + 1}/{max_retries}: Получен пустой ответ от API."
+                        "Попытка %d/%d: Получен пустой ответ от API.",
+                        attempt + 1,
+                        max_retries,
                     )
-            except Exception as e:
-                logger.error(f"Попытка {attempt + 1}/{max_retries}: Ошибка API: {e}")
+            except json.JSONDecodeError:
+                logger.exception("Попытка %d/%d: Ошибка API.", attempt + 1, max_retries)
 
             if attempt < max_retries - 1:
-                logger.info(f"Ожидание {retry_delay} сек перед повторным запросом...")
+                logger.info("Ожидание %d сек перед повторным запросом...", retry_delay)
                 sleep(retry_delay)
                 retry_delay *= 2
 
@@ -434,13 +455,15 @@ if to_process_llm:
                 )
                 conn.commit()
                 logger.info("Успешно сохранено в БД.")
-            except Exception as e:
-                logger.error(f"Ошибка записи перевода в БД для {title}: {e}")
+            except sqlite3.Error:
+                logger.exception("Ошибка записи перевода в БД для %s", title)
 
             sleep(6)
         else:
             logger.error(
-                f"Не удалось обработать {title} после {max_retries} попыток. Переходим к следующему."
+                "Не удалось обработать %s после %d попыток. Переходим к следующему.",
+                title,
+                max_retries,
             )
 else:
     logger.info("Все извлеченные статьи уже переведены и сохранены в БД.")
@@ -452,14 +475,17 @@ grammar_items = cursor.fetchall()
 
 
 def generate_guid(grammar: str, jlpt: str) -> str:
-    return md5(f"{grammar}{jlpt}".encode()).hexdigest()
+    return md5(f"{grammar}{jlpt}".encode(), usedforsecurity=False).hexdigest()
 
 
-temp_db = "temp_bunpro.anki2"
-if exists(temp_db):
-    remove(temp_db)
+temp_db = Path("temp_bunpro.anki2")
+if temp_db.exists():
+    temp_db.unlink(missing_ok=True)
 
-col = Collection(temp_db)
+if OUTPUT_FILE.exists():
+    OUTPUT_FILE.unlink()
+
+col = Collection(temp_db.absolute().as_posix())
 try:
     model = col.models.by_name("bunpro_grammar_deck")
     if not model:
@@ -486,25 +512,31 @@ try:
 
     col.models.add(model)
 
-    deck_id_passive = col.decks.id("Bunpro::Распознавание")
-    deck_id_active = col.decks.id("Bunpro::Воспроизведение")
-    if deck_id_passive is None or deck_id_active is None:
-        raise ValueError("Не удалось создать или получить ID колод в Anki.")
-
     for item in grammar_items:
         examples_html_list = []
 
+        jlpt = item["jlpt"]
+
+        deck_id_passive = col.decks.id(f"Bunpro::Распознавание::{jlpt}")
+        deck_id_active = col.decks.id(f"Bunpro::Воспроизведение::{jlpt}")
+        if deck_id_passive is None or deck_id_active is None:
+            raise ValueError("Не удалось создать или получить ID колод в Anki.")
+
         try:
             parsed_examples = json.loads(item["examples"]) if item["examples"] else []
-        except Exception as e:
-            logger.error(f"Ошибка парсинга примеров для {item['grammar']}: {e}")
+        except json.JSONDecodeError:
+            logger.exception("Ошибка парсинга примеров для %s", item["grammar"])
             parsed_examples = []
 
-        for ex in parsed_examples[:4]:
-            examples_html_list.append(
-                f'<div class="example-item"><div class="ex-jp">{ex["jp"]}</div><div class="ex-ru">{ex["ru"]}</div></div>'
-            )
-        examples_html = "".join(examples_html_list)
+        examples_html = "".join(
+            [
+                f'<div class="example-item">'
+                f'<div class="ex-jp">{ex["jp"]}</div>'
+                f'<div class="ex-ru">{ex["ru"]}</div>'
+                f"</div>"
+                for ex in parsed_examples[:4]
+            ]
+        )
 
         note = col.new_note(model)
         note.guid = generate_guid(item["grammar"], item["jlpt"])
@@ -525,15 +557,16 @@ try:
             col.update_card(card_active)
 
     exporter = AnkiPackageExporter(col)
-    output_file = "bunpro_grammar.apkg"
-    exporter.exportInto(output_file)
-    logger.info(f"Колода создана успешно! Имя файла: {output_file}")
+    exporter.exportInto(OUTPUT_FILE.absolute().as_posix())
+    logger.info("Колода создана успешно! Имя файла: %s", OUTPUT_FILE.name)
 
 finally:
     col.close()
-    if exists(temp_db):
-        remove(temp_db)
-    if exists(temp_db + ".log"):
-        remove(temp_db + ".log")
-    if exists("temp_col.media"):
-        rmtree("temp_col.media")
+    if temp_db.exists():
+        temp_db.unlink()
+    temp_db_log = Path(temp_db / ".log")
+    if temp_db_log.exists():
+        temp_db_log.unlink()
+    temp_media = Path("temp_bunpro.media")
+    if temp_media.exists():
+        rmtree(temp_media)

@@ -1,0 +1,16 @@
+[src]
+exclude = [
+    ".venv",
+    "bunpro_cache",
+]
+
+[terminal]
+output-format = "full"
+error-on-warning = true
+
+[analysis]
+strict-equality-semantics = true
+respect-type-ignore-comments = true
+
+[rules]
+all = "error"

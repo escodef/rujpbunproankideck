@@ -98,7 +98,7 @@ CARD_CSS = """
 .nightMode .ex-jp {
     color: #38bdf8;
 }
-.ex-en {
+.ex-ru {
     font-size: 0.9em;
     color: #7f8c8d;
     margin-top: 3px;

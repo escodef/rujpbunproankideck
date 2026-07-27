@@ -5,3 +5,4 @@ bunpro_cache
 *.json
 *.apkg
 bunpro.db
+.ruff_cache

@@ -1,0 +1,45 @@
+indent-width = 4
+
+exclude = [
+    ".git",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "bunpro_cache",
+]
+
+[lint]
+select = ["ALL"]
+
+ignore = [
+    "EM101",
+    "EM102",
+    "BLE001",
+    "TRY003",
+    "E501",
+    "B904",
+    "RUF001",
+    "D100",
+    "D103",
+    "CPY001",
+    "COM812",
+    "D211",
+    "D213",
+    "D203",
+    "ANN201",
+    "PLR2004",
+]
+
+fixable = ["ALL"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+docstring-code-format = true
+skip-magic-trailing-comma = false
