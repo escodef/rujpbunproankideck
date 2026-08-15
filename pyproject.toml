@@ -7,13 +7,13 @@ requires-python = ">=3.14"
 dependencies = [
     "anki>=26.8.1",
     "beautifulsoup4>=4.15.0",
-    "openai>=2.53.0",
+    "openai>=3.1.0",
     "python-dotenv>=1.2.2",
     "requests>=2.34.2",
 ]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.16.2",
-    "ty>=0.0.69",
+    "ruff>=0.16.3",
+    "ty>=0.0.72",
 ]
