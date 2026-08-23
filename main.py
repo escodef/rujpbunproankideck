@@ -43,11 +43,12 @@ session = requests.Session()
 session.headers.update(HEADERS)
 
 api_key = getenv("API_KEY")
-if api_key is None:
+base_url = getenv("API_URL")
+if api_key is None or base_url is None:
     logger.error("API_KEY не найден в .env")
     sys.exit(1)
 
-client = OpenAI(base_url="https://api.cerebras.ai/v1", api_key=api_key, max_retries=0)
+client = OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
 
 conn = sqlite3.connect(DB_FILE)
 
