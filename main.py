@@ -9,7 +9,7 @@ from os import getenv
 from pathlib import Path
 from shutil import rmtree
 from time import sleep
-from urllib.parse import unquote, urljoin
+from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 
 import requests
 from anki.collection import Collection
@@ -38,6 +38,7 @@ INDEX_URL = "https://bunpro.jp/grammar_points"
 DB_FILE = "bunpro.db"
 OUTPUT_FILE = Path("bunpro_grammar.apkg")
 CACHE_DIR = Path("bunpro_cache")
+AUDIO_DIR = Path("bunpro_audio")
 
 session = requests.Session()
 session.headers.update(HEADERS)
@@ -45,15 +46,13 @@ session.headers.update(HEADERS)
 api_key = getenv("API_KEY")
 base_url = getenv("API_URL")
 if api_key is None or base_url is None:
-    logger.error("API_KEY не найден в .env")
+    logger.error("API_KEY или API_URL не найден в .env")
     sys.exit(1)
 
 client = OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
 
 conn = sqlite3.connect(DB_FILE)
-
 conn.row_factory = sqlite3.Row
-
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -144,12 +143,82 @@ cursor.execute("SELECT point_name, url FROM links")
 grammar_list = cursor.fetchall()
 
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def sanitize_filename(name: str) -> str:
-    return "".join(
-        [c for c in name if c.isalpha() or c.isdigit() or c in (" ", "_", "-")]
-    ).rstrip()
+    return "".join([c for c in name if c.isalnum() or c in (" ", "_", "-")]).strip()
+
+
+def normalize_jp(text: str) -> str:
+    t = re.sub(r"（[^）]*）|\([^)]*\)", "", text)
+    t = re.sub(r"<[^>]+>", "", t)
+    return re.sub(r"[\s、。！？\-_・\.,!?]", "", t)
+
+
+def download_audio_file(audio_url: str) -> Path | None:
+    if not audio_url:
+        return None
+    try:
+        parts = urlsplit(audio_url)
+        quoted_path = quote(unquote(parts.path))
+        clean_url = urlunsplit(
+            (parts.scheme, parts.netloc, quoted_path, parts.query, parts.fragment)
+        )
+
+        raw_filename = unquote(parts.path.split("/")[-1])
+        base_name = sanitize_filename(Path(raw_filename).stem)
+        if not base_name:
+            base_name = md5(audio_url.encode(), usedforsecurity=False).hexdigest()[:12]
+        local_path = AUDIO_DIR / f"{base_name}.mp3"
+
+        if not local_path.exists() or local_path.stat().st_size == 0:
+            res = session.get(clean_url, timeout=15)
+            if res.status_code == HTTPStatus.OK:
+                with local_path.open("wb") as f:
+                    f.write(res.content)
+            else:
+                logger.debug(
+                    "Не удалось скачать аудио: %s (код %d)", clean_url, res.status_code
+                )
+                return None
+    except Exception:
+        logger.exception("Ошибка загрузки аудио %s", audio_url)
+        return None
+    else:
+        return local_path
+
+
+def extract_questions_with_audio_from_html(html_content: str) -> list[dict[str, str]]:
+    results: list[dict[str, str]] = []
+    soup = BeautifulSoup(html_content, "html.parser")
+    next_data = soup.find("script", id="__NEXT_DATA__")
+    if not next_data or not next_data.string:
+        return results
+
+    try:
+        data = json.loads(next_data.string)
+        study_questions = (
+            data.get("props", {})
+            .get("pageProps", {})
+            .get("included", {})
+            .get("studyQuestions", [])
+        )
+        for sq in study_questions:
+            content = sq.get("content", "")
+            ans = sq.get("kanji_answer") or sq.get("answer") or ""
+            full_jp = content.replace("____", ans)
+            audio_url = sq.get("female_audio_url") or sq.get("male_audio_url") or ""
+            results.append(
+                {
+                    "full_jp": full_jp,
+                    "normalized": normalize_jp(full_jp),
+                    "audio_url": audio_url,
+                }
+            )
+    except Exception:
+        logger.exception("Ошибка при парсинге studyQuestions из Next.js")
+    return results
 
 
 downloaded = 0
@@ -267,36 +336,26 @@ if files_to_process:
 
             examples: list[str] = []
             next_data_script = soup.find("script", id="__NEXT_DATA__")
-            if next_data_script:
+            if next_data_script and next_data_script.string:
                 try:
-
-                    def extract_sentences(
-                        examples: list[str],
-                        obj: dict[str, str] | list[str] | str,
-                    ):
-                        if isinstance(obj, dict):
-                            jp_val = (
-                                obj.get("japanese")
-                                or obj.get("sentence")
-                                or obj.get("content")
-                            )
-                            if isinstance(jp_val, str) and re.search(
-                                r"[\u3040-\u30ff]", jp_val
-                            ):
-                                clean_txt = re.sub(r"<[^>]+>", "", jp_val).strip()
-                                if len(clean_txt) > 5:
-                                    examples.append(clean_txt)
-                            for v in obj.values():
-                                extract_sentences(examples, v)
-                        elif isinstance(obj, list):
-                            for i in obj:
-                                extract_sentences(examples, i)
-
-                    if next_data_script.string:
-                        data = json.loads(next_data_script.string)
-                        extract_sentences(examples, obj=data)
+                    data = json.loads(next_data_script.string)
+                    study_questions = (
+                        data.get("props", {})
+                        .get("pageProps", {})
+                        .get("included", {})
+                        .get("studyQuestions", [])
+                    )
+                    for sq in study_questions:
+                        content = sq.get("content", "")
+                        ans = sq.get("kanji_answer") or sq.get("answer") or ""
+                        full_jp = content.replace("____", ans)
+                        clean_txt = re.sub(r"<[^>]+>", "", full_jp).strip()
+                        if len(clean_txt) > 5 and re.search(
+                            r"[\u3040-\u30ff\u4e00-\u9faf]", clean_txt
+                        ):
+                            examples.append(clean_txt)
                 except Exception:
-                    logger.exception("Ошибка при попытке извлечения примеров")
+                    logger.exception("Ошибка при извлечении примеров из JSON")
 
             if not examples:
                 for el in soup.find_all(
@@ -316,8 +375,7 @@ if files_to_process:
                     seen.add(clean)
 
             examples_raw_json = json.dumps(unique_examples[:10], ensure_ascii=False)
-
-            current_url = filename_to_url.get(file, "")
+            current_url = filename_to_url.get(file.name, "")
 
             cursor.execute(
                 """
@@ -469,8 +527,11 @@ if to_process_llm:
 else:
     logger.info("Все извлеченные статьи уже переведены и сохранены в БД.")
 
+cursor.execute("SELECT title, filename FROM extracted_grammar")
+title_to_filename = {row["title"]: row["filename"] for row in cursor.fetchall()}
+
 cursor.execute(
-    "SELECT grammar, jlpt, meaning, structure, nuance, url, examples FROM translated_grammar"
+    "SELECT source_title, grammar, jlpt, meaning, structure, nuance, url, examples FROM translated_grammar"
 )
 grammar_items = cursor.fetchall()
 
@@ -514,8 +575,6 @@ try:
     col.models.add(model)
 
     for item in grammar_items:
-        examples_html_list = []
-
         jlpt = item["jlpt"]
 
         deck_id_passive = col.decks.id(f"Bunpro::Распознавание::{jlpt}")
@@ -529,15 +588,51 @@ try:
             logger.exception("Ошибка парсинга примеров для %s", item["grammar"])
             parsed_examples = []
 
-        examples_html = "".join(
-            [
+        cached_fn = title_to_filename.get(item["source_title"])
+        questions_audio_meta = []
+        if cached_fn:
+            cached_html_file = CACHE_DIR / cached_fn
+            if cached_html_file.exists():
+                questions_audio_meta = extract_questions_with_audio_from_html(
+                    cached_html_file.read_text(encoding="utf-8")
+                )
+
+        rendered_examples = []
+        for ex in parsed_examples[:4]:
+            ex_jp = ex.get("jp", "")
+            ex_ru = ex.get("ru", "")
+            norm_ex_jp = normalize_jp(ex_jp)
+
+            audio_tag = ""
+            matched_audio_url = ""
+
+            for q in questions_audio_meta:
+                if not q["audio_url"]:
+                    continue
+                if (
+                    norm_ex_jp == q["normalized"]
+                    or norm_ex_jp in q["normalized"]
+                    or q["normalized"] in norm_ex_jp
+                ):
+                    matched_audio_url = q["audio_url"]
+                    break
+
+            if matched_audio_url:
+                local_audio_path = download_audio_file(matched_audio_url)
+                if local_audio_path and local_audio_path.exists():
+                    anki_media_filename = col.media.add_file(
+                        local_audio_path.absolute().as_posix()
+                    )
+                    audio_tag = f" [sound:{anki_media_filename}]"
+
+            rendered_examples.append(
                 f'<div class="example-item">'
-                f'<div class="ex-jp">{ex["jp"]}</div>'
-                f'<div class="ex-ru">{ex["ru"]}</div>'
+                f'<div class="ex-jp">{ex_jp}{audio_tag}</div>'
+                f'<div class="ex-ru">{ex_ru}</div>'
                 f"</div>"
-                for ex in parsed_examples[:4]
-            ]
-        )
+            )
+
+        examples_html = "".join(rendered_examples)
 
         note = col.new_note(model)
         note.guid = generate_guid(item["grammar"], item["jlpt"])
@@ -565,9 +660,12 @@ finally:
     col.close()
     if temp_db.exists():
         temp_db.unlink()
-    temp_db_log = Path(temp_db / ".log")
+    temp_db_log = Path(temp_db.as_posix() + ".log")
     if temp_db_log.exists():
         temp_db_log.unlink()
+    temp_media_db = Path("temp_bunpro.media.db2")
+    if temp_media_db.exists():
+        temp_media_db.unlink()
     temp_media = Path("temp_bunpro.media")
     if temp_media.exists():
         rmtree(temp_media)

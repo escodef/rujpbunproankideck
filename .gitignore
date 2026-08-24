@@ -2,6 +2,7 @@
 .env
 __pycache__
 bunpro_cache
+bunpro_audio
 *.json
 *.apkg
 bunpro.db
