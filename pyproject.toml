@@ -5,15 +5,15 @@ description = "Карточки Bunpro грамматики для anki"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "anki>=26.9.2",
+    "anki>=26.9.3",
     "beautifulsoup4>=4.15.0",
-    "openai>=3.15.0",
-    "python-dotenv>=1.2.3",
+    "openai>=3.42.0",
+    "python-dotenv>=1.2.4",
     "requests>=2.34.2",
 ]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.16.8",
-    "ty>=0.0.82",
+    "ruff>=0.17.3",
+    "ty>=0.0.95",
 ]

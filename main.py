@@ -12,8 +12,7 @@ from time import sleep
 from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 
 import requests
-from anki.collection import Collection
-from anki.exporting import AnkiPackageExporter
+from anki.collection import Collection, ExportAnkiPackageOptions
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -193,7 +192,7 @@ def extract_questions_with_audio_from_html(html_content: str) -> list[dict[str, 
     results: list[dict[str, str]] = []
     soup = BeautifulSoup(html_content, "html.parser")
     next_data = soup.find("script", id="__NEXT_DATA__")
-    if not next_data or not next_data.string:
+    if next_data is None or next_data.string is None:
         return results
 
     try:
@@ -286,13 +285,13 @@ if files_to_process:
             title_tag = soup.find("h1")
             title = (
                 title_tag.get_text(" ", strip=True)
-                if title_tag
+                if title_tag is not None
                 else file.name.replace(".html", "")
             )
 
             jlpt_level = "Non-JLPT"
             jlpt_element = soup.find(string=re.compile(r"JLPT\s*N[1-5]", re.IGNORECASE))
-            if jlpt_element:
+            if jlpt_element is not None:
                 match = re.search(r"N[1-5]", jlpt_element, re.IGNORECASE)
                 if match:
                     jlpt_level = match.group(0).upper()
@@ -302,7 +301,7 @@ if files_to_process:
                     ["nav", "div"],
                     class_=re.compile(r"breadcrumb|lesson", re.IGNORECASE),
                 )
-                if breadcrumb:
+                if breadcrumb is not None:
                     match = re.search(r"N[1-5]", breadcrumb.get_text(), re.IGNORECASE)
                     if match:
                         jlpt_level = match.group(0).upper()
@@ -311,11 +310,11 @@ if files_to_process:
                 header = soup.find(
                     ["h2", "h3"], string=re.compile(search_regex, re.IGNORECASE)
                 )
-                if not header:
+                if header is None:
                     header = soup.find(string=re.compile(search_regex, re.IGNORECASE))
-                    if header:
+                    if header is not None:
                         header = header.parent
-                if not header:
+                if header is None:
                     return ""
                 content = []
                 for sibling in header.find_all_next():
@@ -324,7 +323,8 @@ if files_to_process:
                     ):
                         break
                     if sibling.name in ["p", "ul", "ol", "div"] and (
-                        sibling.name != "div" or not sibling.find(["p", "div", "ul"])
+                        sibling.name != "div"
+                        or sibling.find(["p", "div", "ul"]) is None
                     ):
                         txt = sibling.get_text(" ", strip=True)
                         if txt and txt not in ["English", "Japanese"]:
@@ -336,7 +336,7 @@ if files_to_process:
 
             examples: list[str] = []
             next_data_script = soup.find("script", id="__NEXT_DATA__")
-            if next_data_script and next_data_script.string:
+            if next_data_script is not None and next_data_script.string is not None:
                 try:
                     data = json.loads(next_data_script.string)
                     study_questions = (
@@ -475,7 +475,7 @@ if to_process_llm:
 
                 raw_text = completion.choices[0].message.content
 
-                if raw_text:
+                if raw_text is not None:
                     parsed_json = json.loads(raw_text)
                     parsed_json["jlpt"] = jlpt
                     success = True
@@ -550,7 +550,7 @@ if OUTPUT_FILE.exists():
 col = Collection(temp_db.absolute().as_posix())
 try:
     model = col.models.by_name("bunpro_grammar_deck")
-    if not model:
+    if model is None:
         model = col.models.new("bunpro_grammar_deck")
         col.models.add_field(model, col.models.new_field("Grammar"))
         col.models.add_field(model, col.models.new_field("JLPT"))
@@ -652,8 +652,16 @@ try:
             card_active.did = deck_id_active
             col.update_card(card_active)
 
-    exporter = AnkiPackageExporter(col)
-    exporter.exportInto(OUTPUT_FILE.absolute().as_posix())
+    col.export_anki_package(
+        out_path=OUTPUT_FILE.absolute().as_posix(),
+        options=ExportAnkiPackageOptions(
+            with_scheduling=False,
+            with_deck_configs=True,
+            with_media=True,
+            legacy=False,
+        ),
+        limit=None,
+    )
     logger.info("Колода создана успешно! Имя файла: %s", OUTPUT_FILE.name)
 
 finally:
